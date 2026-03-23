@@ -1,0 +1,4 @@
+venv/
+modbus.log
+*.log
+__pycache__/
