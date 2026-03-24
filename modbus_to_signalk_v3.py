@@ -117,14 +117,23 @@ async def main_loop():
     while True:
         try:
             log.debug(f"Conectando WebSocket {SIGNALK_WS_URL}...")
-            async with websockets.connect(SIGNALK_WS_URL) as ws:
-                backoff = 1
+            # Configurar ping/pong para mantener conexión viva
+            async with websockets.connect(
+                SIGNALK_WS_URL,
+                ping_interval=20,  # Ping cada 20 segundos
+                ping_timeout=10,   # Timeout de 10 segundos
+                close_timeout=10   # Timeout de cierre de 10 segundos
+            ) as ws:
                 log.info("WebSocket Signal K conectado")
+                
+                # Solo resetear backoff después de una conexión estable (más de 60 segundos)
+                conexion_exitosa = asyncio.create_task(asyncio.sleep(60))
 
                 # Si estaba caído y vuelve, avisamos
                 if alerta_arduino:
                     alerta_arduino = False
-                    await enviar_telegram("✅ <b>Arduino reconectado</b>\nComunicación Modbus restaurada.")
+                    await enviar_telegram("✅ <b>Arduino reconectado</b>")
+                    print("Comunicación Modbus restaurada.")
 
                 try:
                     hello = await asyncio.wait_for(ws.recv(), timeout=2)
@@ -133,6 +142,12 @@ async def main_loop():
                     pass
 
                 while True:
+                    # Si han pasado 60 segundos de conexión estable, resetear backoff
+                    if conexion_exitosa.done():
+                        backoff = 1
+                        # Crear nueva tarea para los próximos 60 segundos
+                        conexion_exitosa = asyncio.create_task(asyncio.sleep(60))
+                    
                     result = client.read_holding_registers(
                         address=0, count=6, device_id=MODBUS_DEVICE_ID
                     )
@@ -154,7 +169,8 @@ async def main_loop():
                     # Arduino responde — reseteamos alerta si estaba activa
                     if alerta_arduino:
                         alerta_arduino = False
-                        await enviar_telegram("✅ <b>Arduino reconectado</b>\nComunicación Modbus restaurada.")
+                        await enviar_telegram("✅ <b>Arduino reconectado</b>")
+                        print("Comunicación Modbus restaurada.")
 
                     temp_raw    = result.registers[0]
                     press_raw   = result.registers[1]
@@ -225,22 +241,29 @@ async def main_loop():
 
                     delta = build_delta(temp_c, pressure_hpa, mq2_raw_int,
                                         tanque1_raw, tanque2_raw, sentina_raw)
+                    
+                    # Enviar datos y dar tiempo al servidor para procesar
                     await ws.send(json.dumps(delta))
+                    await asyncio.sleep(0.1)  # Pequeño delay después del envío
+                    
                     await asyncio.sleep(SEND_INTERVAL_S)
 
         except Exception as e:
-            log.error(f"WS caido/error: {e!r} (reintentando en {backoff}s)")
+            # Cancelar tarea de conexión exitosa si existe
+            if 'conexion_exitosa' in locals() and not conexion_exitosa.done():
+                conexion_exitosa.cancel()
+                
+            log.error(f"WS caido/error: {e!r}")
 
-            # Alerta Arduino/conexión caída
-            if not alerta_arduino:
+            # Alerta Arduino/conexión caída (solo si no es un simple timeout)
+            if not alerta_arduino and "ping timeout" not in str(e).lower():
                 alerta_arduino = True
-                await enviar_telegram(
-                    f"🔌 <b>ALERTA: Arduino desconectado</b>\n"
-                    f"Error: {e!r}\nReintentando en {backoff}s..."
-                )
+                await enviar_telegram("🔌 <b>ALERTA: Arduino desconectado</b>")
 
+            # Esperar antes de reintentar, con backoff gradual
+            log.info(f"Reintentando conexión en {backoff}s...")
             await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, 30)
+            backoff = min(backoff * 2, 60)  # Máximo 1 minuto
 
 
 try:
