@@ -120,8 +120,8 @@ async def main_loop():
             # Configurar ping/pong para mantener conexión viva
             async with websockets.connect(
                 SIGNALK_WS_URL,
-                ping_interval=20,  # Ping cada 20 segundos
-                ping_timeout=10,   # Timeout de 10 segundos
+                ping_interval=10,  # Ping cada 10 segundos (más frecuente)
+                ping_timeout=15,   # Timeout de 15 segundos (más tolerante)
                 close_timeout=10   # Timeout de cierre de 10 segundos
             ) as ws:
                 log.info("WebSocket Signal K conectado")
